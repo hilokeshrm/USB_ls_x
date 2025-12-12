@@ -19,8 +19,13 @@ class LS6LogsReaderGUI:
         self.stop_reading = False
         
         # Default settings
-        self.port_var = tk.StringVar(value="COM17")
+        self.port_var = tk.StringVar(value="COM21")
         self.baud_var = tk.StringVar(value="57600")
+        
+        # Search variables
+        self.search_matches = []
+        self.current_match_index = -1
+        self.case_sensitive = False
         
         self.create_widgets()
         
@@ -84,14 +89,98 @@ class LS6LogsReaderGUI:
         logs_frame = tk.Frame(self.root, bg="#ffffff", relief=tk.SUNKEN, bd=2)
         logs_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
+        # Logs header with search
+        logs_header = tk.Frame(logs_frame, bg="#ffffff")
+        logs_header.pack(fill=tk.X, padx=5, pady=5)
+        
         logs_label = tk.Label(
-            logs_frame,
+            logs_header,
             text="Logs Output:",
             bg="#ffffff",
             font=("Arial", 10, "bold"),
             anchor=tk.W
         )
-        logs_label.pack(fill=tk.X, padx=5, pady=5)
+        logs_label.pack(side=tk.LEFT)
+        
+        # Search frame
+        search_frame = tk.Frame(logs_header, bg="#ffffff")
+        search_frame.pack(side=tk.RIGHT, padx=5)
+        
+        search_label = tk.Label(
+            search_frame,
+            text="Search:",
+            bg="#ffffff",
+            font=("Arial", 9)
+        )
+        search_label.pack(side=tk.LEFT, padx=2)
+        
+        self.search_entry = tk.Entry(
+            search_frame,
+            font=("Arial", 9),
+            width=20
+        )
+        self.search_entry.pack(side=tk.LEFT, padx=2)
+        self.search_entry.bind("<Return>", lambda e: self.search_text())
+        self.search_entry.bind("<KeyRelease>", lambda e: self.search_text())
+        
+        # Case sensitive checkbox
+        self.case_var = tk.BooleanVar()
+        case_check = tk.Checkbutton(
+            search_frame,
+            text="Case",
+            variable=self.case_var,
+            bg="#ffffff",
+            font=("Arial", 8),
+            command=self.search_text
+        )
+        case_check.pack(side=tk.LEFT, padx=2)
+        
+        # Search buttons
+        prev_button = tk.Button(
+            search_frame,
+            text="◀",
+            command=self.search_previous,
+            bg="#95a5a6",
+            fg="white",
+            font=("Arial", 8),
+            width=3,
+            cursor="hand2"
+        )
+        prev_button.pack(side=tk.LEFT, padx=1)
+        
+        next_button = tk.Button(
+            search_frame,
+            text="▶",
+            command=self.search_next,
+            bg="#95a5a6",
+            fg="white",
+            font=("Arial", 8),
+            width=3,
+            cursor="hand2"
+        )
+        next_button.pack(side=tk.LEFT, padx=1)
+        
+        # Match count label
+        self.match_count_label = tk.Label(
+            search_frame,
+            text="",
+            bg="#ffffff",
+            font=("Arial", 8),
+            fg="#7f8c8d"
+        )
+        self.match_count_label.pack(side=tk.LEFT, padx=5)
+        
+        clear_search_button = tk.Button(
+            search_frame,
+            text="✕",
+            command=self.clear_search,
+            bg="#e74c3c",
+            fg="white",
+            font=("Arial", 8),
+            width=3,
+            cursor="hand2"
+        )
+        clear_search_button.pack(side=tk.LEFT, padx=2)
         
         self.logs_text = scrolledtext.ScrolledText(
             logs_frame,
@@ -103,6 +192,14 @@ class LS6LogsReaderGUI:
             state=tk.DISABLED
         )
         self.logs_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Configure search highlight tag
+        self.logs_text.tag_config("search_highlight", background="#ffff00", foreground="#000000")
+        self.logs_text.tag_config("current_match", background="#ff8800", foreground="#000000")
+        
+        # Bind Ctrl+C globally to send interrupt
+        self.root.bind_all("<Control-c>", lambda e: self.send_interrupt())
+        self.root.bind_all("<Control-C>", lambda e: self.send_interrupt())
         
         # Command input frame
         cmd_frame = tk.Frame(self.root, bg="#ecf0f1", relief=tk.RAISED, bd=2)
@@ -136,6 +233,19 @@ class LS6LogsReaderGUI:
         )
         send_button.pack(side=tk.LEFT, padx=5, pady=5)
         
+        # Ctrl+C interrupt button
+        interrupt_button = tk.Button(
+            cmd_frame,
+            text="Ctrl+C",
+            command=self.send_interrupt,
+            bg="#e67e22",
+            fg="white",
+            font=("Arial", 9, "bold"),
+            width=8,
+            cursor="hand2"
+        )
+        interrupt_button.pack(side=tk.LEFT, padx=5, pady=5)
+        
         # Clear button
         clear_button = tk.Button(
             cmd_frame,
@@ -163,6 +273,114 @@ class LS6LogsReaderGUI:
         self.logs_text.config(state=tk.NORMAL)
         self.logs_text.delete(1.0, tk.END)
         self.logs_text.config(state=tk.DISABLED)
+        self.clear_search()
+        
+    def clear_search(self):
+        """Clear search highlights and reset search"""
+        self.search_entry.delete(0, tk.END)
+        self.search_matches = []
+        self.current_match_index = -1
+        self.match_count_label.config(text="")
+        self.remove_search_highlights()
+        
+    def remove_search_highlights(self):
+        """Remove all search highlights"""
+        self.logs_text.config(state=tk.NORMAL)
+        self.logs_text.tag_remove("search_highlight", 1.0, tk.END)
+        self.logs_text.tag_remove("current_match", 1.0, tk.END)
+        self.logs_text.config(state=tk.DISABLED)
+        
+    def search_text(self):
+        """Search for text in logs and highlight matches"""
+        search_term = self.search_entry.get()
+        self.case_sensitive = self.case_var.get()
+        
+        # Remove previous highlights
+        self.remove_search_highlights()
+        self.search_matches = []
+        self.current_match_index = -1
+        
+        if not search_term:
+            self.match_count_label.config(text="")
+            return
+            
+        self.logs_text.config(state=tk.NORMAL)
+        
+        # Use text widget's search method
+        start_pos = 1.0
+        nocase = 0 if self.case_sensitive else 1
+        
+        while True:
+            # Search for the term
+            pos = self.logs_text.search(search_term, start_pos, tk.END, nocase=nocase)
+            if not pos:
+                break
+                
+            # Calculate end position
+            end_pos = f"{pos}+{len(search_term)}c"
+            
+            self.search_matches.append((pos, end_pos))
+            
+            # Highlight match
+            self.logs_text.tag_add("search_highlight", pos, end_pos)
+            
+            # Move start position for next search
+            start_pos = end_pos
+            
+        # Update match count
+        match_count = len(self.search_matches)
+        if match_count > 0:
+            self.match_count_label.config(text=f"{match_count} match{'es' if match_count != 1 else ''}")
+            # Go to first match
+            self.current_match_index = 0
+            self.highlight_current_match()
+        else:
+            self.match_count_label.config(text="No matches")
+            
+        self.logs_text.config(state=tk.DISABLED)
+        
+    def highlight_current_match(self):
+        """Highlight the current match"""
+        if not self.search_matches or self.current_match_index < 0:
+            return
+            
+        # Remove current match highlight from all
+        self.logs_text.config(state=tk.NORMAL)
+        self.logs_text.tag_remove("current_match", 1.0, tk.END)
+        
+        # Highlight current match
+        if 0 <= self.current_match_index < len(self.search_matches):
+            start, end = self.search_matches[self.current_match_index]
+            self.logs_text.tag_add("current_match", start, end)
+            self.logs_text.see(start)
+            
+        self.logs_text.config(state=tk.DISABLED)
+        
+    def search_next(self):
+        """Navigate to next search match"""
+        if not self.search_matches:
+            self.search_text()
+            return
+            
+        if self.current_match_index < len(self.search_matches) - 1:
+            self.current_match_index += 1
+        else:
+            self.current_match_index = 0  # Wrap around
+            
+        self.highlight_current_match()
+        
+    def search_previous(self):
+        """Navigate to previous search match"""
+        if not self.search_matches:
+            self.search_text()
+            return
+            
+        if self.current_match_index > 0:
+            self.current_match_index -= 1
+        else:
+            self.current_match_index = len(self.search_matches) - 1  # Wrap around
+            
+        self.highlight_current_match()
         
     def toggle_connection(self):
         """Connect or disconnect from serial port"""
@@ -231,6 +449,19 @@ class LS6LogsReaderGUI:
                     self.root.after(0, self.log_message, f"Read error: {e}", "#e74c3c")
                 time.sleep(0.1)
                 
+    def send_interrupt(self):
+        """Send Ctrl+C interrupt signal to serial port"""
+        if not self.is_connected or not self.ser or not self.ser.is_open:
+            return  # Silently return if not connected
+            
+        try:
+            # Send Ctrl+C (ASCII 0x03, interrupt character)
+            interrupt_char = b'\x03'
+            self.ser.write(interrupt_char)
+            self.log_message(">>> [Ctrl+C] Interrupt signal sent", "#ff8800")
+        except Exception as e:
+            self.log_message(f"Interrupt send error: {e}", "#e74c3c")
+    
     def send_command(self):
         """Send command to serial port"""
         if not self.is_connected or not self.ser or not self.ser.is_open:
